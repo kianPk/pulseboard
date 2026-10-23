@@ -14,9 +14,14 @@ class PulseboardApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         useMaterial3: true,
-        brightness: Brightness.dark,
-        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF3DFFA8), brightness: Brightness.dark),
-        scaffoldBackgroundColor: const Color(0xFF060910),
+        brightness: Brightness.light,
+        colorScheme: const ColorScheme.light(
+          primary: Color(0xFF5A6B5C),
+          onPrimary: Color(0xFFF4F6F8),
+          surface: Color(0xFFF4F6F8),
+          onSurface: Color(0xFF12161C),
+        ),
+        scaffoldBackgroundColor: const Color(0xFFE8EBEE),
       ),
       home: const DashboardPage(),
     );
@@ -29,6 +34,14 @@ class ServiceStatus {
   final String region;
   double latency;
   bool ok;
+  final List<double> history = [];
+}
+
+class Incident {
+  Incident(this.at, this.service, this.detail);
+  final DateTime at;
+  final String service;
+  final String detail;
 }
 
 class DashboardPage extends StatefulWidget {
@@ -41,9 +54,13 @@ class _DashboardPageState extends State<DashboardPage> {
   final _rng = Random();
   late List<ServiceStatus> _services;
   late List<double> _rpsHistory;
+  final List<Incident> _incidentsLog = [];
   Timer? _timer;
-  int _incidents = 2;
+  int _incidents = 0;
   double _errorRate = 0.4;
+  bool _paused = false;
+  ServiceStatus? _selected;
+  double _alertLatency = 100;
 
   @override
   void initState() {
@@ -56,16 +73,33 @@ class _DashboardPageState extends State<DashboardPage> {
       ServiceStatus('realtime', 'fra', 28, true),
       ServiceStatus('billing', 'iad', 120, false),
     ];
-    _rpsHistory = List.generate(24, (i) => 40 + _rng.nextDouble() * 80);
+    for (final s in _services) {
+      s.history.addAll(List.generate(20, (_) => s.latency + _rng.nextDouble() * 20 - 10));
+    }
+    _rpsHistory = List.generate(30, (i) => 40 + _rng.nextDouble() * 80);
+    _incidentsLog.add(Incident(DateTime.now().subtract(const Duration(minutes: 12)), 'billing', 'elevated latency'));
     _timer = Timer.periodic(const Duration(seconds: 2), (_) => _tick());
   }
 
   void _tick() {
+    if (_paused) return;
     setState(() {
       for (final s in _services) {
+        final prev = s.ok;
         s.latency = (s.latency + (_rng.nextDouble() * 20 - 8)).clamp(12, 220);
         if (_rng.nextDouble() < 0.08) s.ok = !s.ok || s.name != 'billing';
         if (s.name == 'billing') s.ok = _rng.nextDouble() > 0.35;
+        s.history
+          ..removeAt(0)
+          ..add(s.latency);
+        if (prev && !s.ok) {
+          _incidentsLog.insert(0, Incident(DateTime.now(), s.name, 'health check failed'));
+        } else if (s.latency > _alertLatency && _rng.nextDouble() < 0.15) {
+          _incidentsLog.insert(0, Incident(DateTime.now(), s.name, 'latency > ${_alertLatency.toInt()}ms'));
+        }
+      }
+      if (_incidentsLog.length > 40) {
+        _incidentsLog.removeRange(40, _incidentsLog.length);
       }
       _rpsHistory
         ..removeAt(0)
@@ -86,19 +120,28 @@ class _DashboardPageState extends State<DashboardPage> {
     final up = _services.where((s) => s.ok).length;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Pulseboard', style: TextStyle(fontWeight: FontWeight.w800, letterSpacing: 0.5)),
+        title: const Text('Pulseboard', style: TextStyle(fontWeight: FontWeight.w800, letterSpacing: -0.4)),
         backgroundColor: Colors.transparent,
         actions: [
+          IconButton(
+            tooltip: _paused ? 'Resume' : 'Pause',
+            onPressed: () => setState(() => _paused = !_paused),
+            icon: Icon(_paused ? Icons.play_arrow : Icons.pause),
+          ),
           Padding(
-            padding: const EdgeInsets.only(right: 16),
+            padding: const EdgeInsets.only(right: 12),
             child: Chip(
-              label: const Text('LIVE'),
+              label: Text(_paused ? 'PAUSED' : 'LIVE'),
               avatar: Container(
                 width: 8,
                 height: 8,
-                decoration: const BoxDecoration(color: Color(0xFF3DFFA8), shape: BoxShape.circle),
+                decoration: BoxDecoration(
+                  color: _paused ? const Color(0xFF8B7355) : const Color(0xFF5A6B5C),
+                  shape: BoxShape.circle,
+                ),
               ),
-              side: BorderSide(color: Colors.white.withOpacity(0.1)),
+              side: BorderSide(color: Colors.black.withOpacity(0.08)),
+              backgroundColor: Colors.white.withOpacity(0.8),
             ),
           ),
         ],
@@ -110,40 +153,94 @@ class _DashboardPageState extends State<DashboardPage> {
             spacing: 10,
             runSpacing: 10,
             children: [
-              _kpi('Services up', '$up/${_services.length}', const Color(0xFF3DFFA8)),
-              _kpi('Incidents', '$_incidents', const Color(0xFFFF6B6B)),
-              _kpi('Error rate', '${_errorRate.toStringAsFixed(2)}%', const Color(0xFFFFC857)),
-              _kpi('RPS', _rpsHistory.last.toStringAsFixed(0), const Color(0xFF7EC8FF)),
+              _kpi('Services up', '$up/${_services.length}', const Color(0xFF5A6B5C)),
+              _kpi('Incidents', '$_incidents', const Color(0xFF8B3A3A)),
+              _kpi('Error rate', '${_errorRate.toStringAsFixed(2)}%', const Color(0xFF8B7355)),
+              _kpi('RPS', _rpsHistory.last.toStringAsFixed(0), const Color(0xFF2A3038)),
             ],
           ),
-          const SizedBox(height: 18),
+          const SizedBox(height: 16),
+          _card(
+            title: 'Alert threshold',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Latency alert at ${_alertLatency.toInt()} ms', style: TextStyle(color: Colors.black.withOpacity(0.55))),
+                Slider(
+                  value: _alertLatency,
+                  min: 40,
+                  max: 180,
+                  divisions: 14,
+                  activeColor: const Color(0xFF5A6B5C),
+                  onChanged: (v) => setState(() => _alertLatency = v),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 14),
           _card(
             title: 'Traffic (RPS)',
-            child: SizedBox(height: 140, child: CustomPaint(painter: SparkPainter(_rpsHistory), child: Container())),
+            child: SizedBox(height: 140, child: CustomPaint(painter: SparkPainter(_rpsHistory, const Color(0xFF5A6B5C)), child: Container())),
           ),
           const SizedBox(height: 14),
           _card(
             title: 'Services',
             child: Column(
               children: _services.map((s) {
+                final hot = s.latency > _alertLatency;
                 return ListTile(
                   contentPadding: EdgeInsets.zero,
-                  leading: Icon(Icons.circle, size: 12, color: s.ok ? const Color(0xFF3DFFA8) : const Color(0xFFFF6B6B)),
+                  onTap: () => setState(() => _selected = s),
+                  leading: Icon(Icons.circle, size: 12, color: s.ok ? const Color(0xFF5A6B5C) : const Color(0xFF8B3A3A)),
                   title: Text(s.name, style: const TextStyle(fontWeight: FontWeight.w600)),
-                  subtitle: Text(s.region.toUpperCase()),
-                  trailing: Text('${s.latency.toStringAsFixed(0)} ms',
-                      style: TextStyle(fontFamily: 'monospace', color: s.latency > 100 ? const Color(0xFFFFC857) : Colors.white70)),
+                  subtitle: Text('${s.region.toUpperCase()}${hot ? ' · alert' : ''}'),
+                  trailing: Text(
+                    '${s.latency.toStringAsFixed(0)} ms',
+                    style: TextStyle(
+                      fontFamily: 'monospace',
+                      color: hot ? const Color(0xFF8B7355) : Colors.black54,
+                    ),
+                  ),
                 );
               }).toList(),
             ),
           ),
+          if (_selected != null) ...[
+            const SizedBox(height: 14),
+            _card(
+              title: '${_selected!.name} detail',
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Region ${_selected!.region.toUpperCase()} · ${_selected!.ok ? 'healthy' : 'degraded'}'),
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    height: 90,
+                    child: CustomPaint(
+                      painter: SparkPainter(_selected!.history, _selected!.ok ? const Color(0xFF5A6B5C) : const Color(0xFF8B3A3A)),
+                      child: Container(),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
           const SizedBox(height: 14),
           _card(
-            title: 'About',
-            child: Text(
-              'Pulseboard is a Flutter ops dashboard demo — animated telemetry, service health, and sparklines. '
-              'Pair it with Gateproxy / Pulsehub backends for a full stack story.',
-              style: TextStyle(color: Colors.white.withOpacity(0.7), height: 1.4),
+            title: 'Incident timeline',
+            child: Column(
+              children: _incidentsLog.take(8).map((i) {
+                return ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  dense: true,
+                  title: Text(i.service, style: const TextStyle(fontWeight: FontWeight.w600)),
+                  subtitle: Text(i.detail),
+                  trailing: Text(
+                    '${i.at.hour.toString().padLeft(2, '0')}:${i.at.minute.toString().padLeft(2, '0')}:${i.at.second.toString().padLeft(2, '0')}',
+                    style: const TextStyle(fontFamily: 'monospace', fontSize: 12, color: Colors.black45),
+                  ),
+                );
+              }).toList(),
             ),
           ),
         ],
@@ -156,16 +253,17 @@ class _DashboardPageState extends State<DashboardPage> {
       width: 160,
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: const Color(0xFF0D1420),
+        color: Colors.white.withOpacity(0.85),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.white10),
+        border: Border.all(color: Colors.black.withOpacity(0.06)),
+        boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.04), blurRadius: 18, offset: const Offset(0, 8))],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(value, style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: accent)),
           const SizedBox(height: 4),
-          Text(label, style: const TextStyle(fontSize: 12, color: Colors.white54)),
+          Text(label, style: const TextStyle(fontSize: 12, color: Colors.black45)),
         ],
       ),
     );
@@ -176,9 +274,9 @@ class _DashboardPageState extends State<DashboardPage> {
       width: double.infinity,
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: const Color(0xFF0D1420),
+        color: Colors.white.withOpacity(0.85),
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: Colors.white10),
+        border: Border.all(color: Colors.black.withOpacity(0.06)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -193,8 +291,9 @@ class _DashboardPageState extends State<DashboardPage> {
 }
 
 class SparkPainter extends CustomPainter {
-  SparkPainter(this.values);
+  SparkPainter(this.values, this.color);
   final List<double> values;
+  final Color color;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -222,19 +321,20 @@ class SparkPainter extends CustomPainter {
         ..shader = LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
-          colors: [const Color(0xFF3DFFA8).withOpacity(0.35), const Color(0xFF3DFFA8).withOpacity(0)],
+          colors: [color.withOpacity(0.28), color.withOpacity(0)],
         ).createShader(Offset.zero & size),
     );
     canvas.drawPath(
       path,
       Paint()
-        ..color = const Color(0xFF3DFFA8)
+        ..color = color
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.5
+        ..strokeWidth = 2.4
         ..strokeCap = StrokeCap.round,
     );
   }
 
   @override
-  bool shouldRepaint(covariant SparkPainter oldDelegate) => oldDelegate.values != values;
+  bool shouldRepaint(covariant SparkPainter oldDelegate) =>
+      oldDelegate.values != values || oldDelegate.color != color;
 }

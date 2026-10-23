@@ -9,6 +9,9 @@ Live web demo: **https://kianpk.github.io/pulseboard/**
 
 ## Features
 
+- Alert threshold, service detail sparklines, incident timeline, pause/resume. Light stone UI.
+
+
 - Animated RPS sparkline (CustomPainter)
 - Per-service latency + up/down
 - Incident & error-rate KPIs
