@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 void main() => runApp(const PulseboardApp());
 
@@ -115,6 +116,41 @@ class _DashboardPageState extends State<DashboardPage> {
     super.dispose();
   }
 
+  String _summaryText() {
+    final up = _services.where((s) => s.ok).length;
+    final lines = <String>[
+      'Pulseboard snapshot',
+      'Services up: $up/${_services.length}',
+      'Incidents: $_incidents',
+      'Error rate: ${_errorRate.toStringAsFixed(2)}%',
+      'RPS: ${_rpsHistory.last.toStringAsFixed(0)}',
+      'Alert latency: ${_alertLatency.toInt()} ms',
+      'Mode: ${_paused ? 'PAUSED' : 'LIVE'}',
+      '',
+      'Services:',
+    ];
+    for (final s in _services) {
+      lines.add('  ${s.name} (${s.region}) — ${s.ok ? 'ok' : 'down'} @ ${s.latency.toStringAsFixed(0)} ms');
+    }
+    return lines.join('\n');
+  }
+
+  Future<void> _exportSummary() async {
+    final text = _summaryText();
+    await Clipboard.setData(ClipboardData(text: text));
+    if (!mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Summary copied'),
+        content: SingleChildScrollView(child: Text(text, style: const TextStyle(fontFamily: 'monospace', fontSize: 12))),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close')),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final up = _services.where((s) => s.ok).length;
@@ -123,6 +159,11 @@ class _DashboardPageState extends State<DashboardPage> {
         title: const Text('Pulseboard', style: TextStyle(fontWeight: FontWeight.w800, letterSpacing: -0.4)),
         backgroundColor: Colors.transparent,
         actions: [
+          IconButton(
+            tooltip: 'Copy KPI summary',
+            onPressed: _exportSummary,
+            icon: const Icon(Icons.ios_share_outlined),
+          ),
           IconButton(
             tooltip: _paused ? 'Resume' : 'Pause',
             onPressed: () => setState(() => _paused = !_paused),
